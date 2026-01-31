@@ -1,17 +1,22 @@
-# MeshBeat Render Blueprint
+# MeshBeat Render Blueprint (All-in-One Docker Deployment)
 # Deploy with: Connect repo to Render and it auto-detects this file
 
 services:
-  # PeerJS Signaling Server
+  # MeshBeat - Next.js App + PeerJS Signaling Server (Dockerized)
   - type: web
-    name: meshbeat-signaling
-    runtime: node
+    name: meshbeat
+    runtime: docker
     region: oregon  # Change to your preferred region
     plan: free
-    rootDir: server
-    buildCommand: npm install
-    startCommand: npm start
     envVars:
       - key: NODE_ENV
         value: production
-    healthCheckPath: /meshbeat
+      - key: NEXT_PUBLIC_PEER_HOST
+        sync: false
+      - key: NEXT_PUBLIC_PEER_PORT
+        value: "443"
+      - key: NEXT_PUBLIC_PEER_PATH
+        value: /meshbeat
+      - key: NEXT_PUBLIC_PEER_SECURE
+        value: "true"
+    # Render automatically detects the Dockerfile

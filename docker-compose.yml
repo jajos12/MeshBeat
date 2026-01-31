@@ -1,0 +1,21 @@
+# MeshBeat Docker Compose
+# For local development and testing
+
+version: '3.8'
+
+services:
+  meshbeat:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      # PeerJS uses localhost since it's in the same container
+      - NEXT_PUBLIC_PEER_HOST=localhost
+      - NEXT_PUBLIC_PEER_PORT=3000
+      - NEXT_PUBLIC_PEER_PATH=/meshbeat
+      - NEXT_PUBLIC_PEER_SECURE=false
+    restart: unless-stopped
