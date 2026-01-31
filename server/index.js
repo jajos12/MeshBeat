@@ -1,7 +1,9 @@
 // MeshBeat PeerJS Signaling Server
 const { PeerServer } = require('peer');
 
-const PORT = process.env.PORT || 9000;
+// PeerJS always runs on internal port 9000
+// The main PORT env var is for the router, not this server
+const PORT = 9000;
 
 const server = PeerServer({
     port: PORT,

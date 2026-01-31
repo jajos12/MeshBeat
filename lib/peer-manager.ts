@@ -12,6 +12,7 @@ import {
     type AudioChunk,
     type SchedulePlay,
     type SyncRequest,
+    type PlaybackState,
     SCHEDULE_BUFFER
 } from './protocol';
 import { syncEngine, type SyncResult } from './sync-engine';
@@ -31,21 +32,47 @@ const ICE_SERVERS = {
 };
 
 // PeerJS Server Configuration (from environment or defaults)
-const PEER_CONFIG = {
-    host: process.env.NEXT_PUBLIC_PEER_HOST || '0.peerjs.com',
-    port: parseInt(process.env.NEXT_PUBLIC_PEER_PORT || '443', 10),
-    path: process.env.NEXT_PUBLIC_PEER_PATH || '/',
-    secure: process.env.NEXT_PUBLIC_PEER_SECURE !== 'false',
-    debug: 0,
-    config: ICE_SERVERS,
+const getPeerConfig = () => {
+    const envHost = process.env.NEXT_PUBLIC_PEER_HOST || '0.peerjs.com';
+    const envPort = parseInt(process.env.NEXT_PUBLIC_PEER_PORT || '443', 10);
+    const envPath = process.env.NEXT_PUBLIC_PEER_PATH || '/';
+    const envSecure = process.env.NEXT_PUBLIC_PEER_SECURE !== 'false';
+
+    // If we're in the browser, determine config based on current location
+    if (typeof window !== 'undefined') {
+        const isSelfHosted = envHost !== '0.peerjs.com';
+
+        return {
+            // If self-hosted (bundled with app), use current page origin
+            // Otherwise use the configured cloud host
+            host: isSelfHosted ? window.location.hostname : envHost,
+            port: isSelfHosted ? (window.location.port ? parseInt(window.location.port, 10) : 443) : envPort,
+            path: envPath,
+            secure: isSelfHosted ? (window.location.protocol === 'https:') : envSecure,
+            debug: 0,
+            config: ICE_SERVERS,
+        };
+    }
+
+    // SSR fallback
+    return {
+        host: envHost,
+        port: envPort,
+        path: envPath,
+        secure: envSecure,
+        debug: 0,
+        config: ICE_SERVERS,
+    };
 };
 
 export class PeerManager {
     private peer: Peer | null = null;
+    private peerConfig = getPeerConfig(); // Store current config instance
     private connections: Map<string, DataConnection> = new Map();
-    private audioChunks: Map<string, string[]> = new Map(); // Base64 encoded chunks
+    private audioChunks: Map<string, Uint8Array[]> = new Map(); // Binary chunks as Uint8Array for msgpack
     private audioMeta: AudioMeta | null = null;
     private isInitialized = false;
+    private pendingPlaybackState: PlaybackState | null = null; // Queue for playback state that arrives before audio is ready
 
     /**
      * Reset internal state before new initialization
@@ -111,7 +138,7 @@ export class PeerManager {
                 reject(new Error('Connection timeout'));
             }, INIT_TIMEOUT);
 
-            this.peer = new Peer(peerId, PEER_CONFIG);
+            this.peer = new Peer(peerId, this.peerConfig);
 
             this.peer.on('open', (id) => {
                 clearTimeout(timeoutId);
@@ -164,7 +191,7 @@ export class PeerManager {
             const guestId = generatePeerId();
             const CONNECTION_TIMEOUT = 3000; // 3 second timeout per attempt - fast fail
 
-            this.peer = new Peer(guestId, PEER_CONFIG);
+            this.peer = new Peer(guestId, this.peerConfig);
 
             // Set up timeout for the entire connection process
             const timeoutId = setTimeout(() => {
@@ -183,10 +210,11 @@ export class PeerManager {
                 store.setPeer(this.peer);
                 store.setStatus('connecting');
 
-                // Connect to host
+                // Connect to host with binary serialization for low-latency audio
                 const conn = this.peer!.connect(hostPeerId, {
+                    metadata: { name: `Guest-${guestId.slice(-4)}` },
+                    serialization: 'binary',
                     reliable: true,
-                    serialization: 'json', // Use JSON for reliable message parsing
                 });
 
                 conn.on('open', () => {
@@ -242,7 +270,7 @@ export class PeerManager {
     private handleIncomingConnection(conn: DataConnection): void {
         console.log('[PeerManager] Incoming connection from:', conn.peer);
 
-        conn.on('open', () => {
+        conn.on('open', async () => {
             this.connections.set(conn.peer, conn);
 
             const connectedPeer: ConnectedPeer = {
@@ -256,12 +284,22 @@ export class PeerManager {
             };
 
             useMeshBeatStore.getState().addPeer(connectedPeer);
+
+            // Ensure connection uses binary serialization
+            // @ts-ignore - explicitly setting serialization for outgoing too
+            conn.serialization = 'binary';
+
             this.setupDataHandler(conn);
 
             // Send current audio if available
-            const audioFile = useMeshBeatStore.getState().audioFile;
+            const store = useMeshBeatStore.getState();
+            const audioFile = store.audioFile;
             if (audioFile?.buffer) {
-                this.streamAudioToPeer(conn, audioFile.buffer, audioFile.name, audioFile.duration);
+                // Stream audio first
+                await this.streamAudioToPeer(conn, audioFile.buffer, audioFile.name, audioFile.duration);
+
+                // Then sync playback state so guest starts from where host is
+                this.sendPlaybackStateToConnection(conn);
             }
         });
 
@@ -319,7 +357,7 @@ export class PeerManager {
                 const chunkMsg = message as AudioChunk;
                 const chunkArray = this.audioChunks.get(conn.peer);
                 if (chunkArray && this.audioMeta) {
-                    // Store chunk at correct index
+                    // Store binary chunk at correct index
                     chunkArray[chunkMsg.chunkIndex] = chunkMsg.data;
                     const receivedCount = chunkArray.filter(c => c !== undefined).length;
                     console.log(`[PeerManager] Chunk ${chunkMsg.chunkIndex + 1}/${chunkMsg.totalChunks} (received: ${receivedCount})`);
@@ -341,6 +379,12 @@ export class PeerManager {
                     break;
                 }
 
+                // Guard: Ensure meta is still available
+                if (!this.audioMeta) {
+                    console.log('[PeerManager] Audio meta already cleared, skipping duplicate process');
+                    break;
+                }
+
                 // Fallback - try to process even if we missed some chunks
                 const completeChunks = this.audioChunks.get(conn.peer)!;
                 const totalReceived = completeChunks.filter(c => c !== undefined).length;
@@ -356,6 +400,19 @@ export class PeerManager {
 
             case MessageType.SCHEDULE_PLAY:
                 const playMsg = message as SchedulePlay;
+
+                // Check if audio is ready before playing
+                if (!audioEngine.getIsReady()) {
+                    console.log('[PeerManager] Audio not ready for play, queueing...');
+                    this.pendingPlaybackState = {
+                        type: MessageType.PLAYBACK_STATE,
+                        isPlaying: true,
+                        seekPosition: playMsg.seekPosition,
+                        startTime: playMsg.startTime,
+                    };
+                    break;
+                }
+
                 audioEngine.schedulePlay(playMsg.startTime, playMsg.seekPosition, store.clockOffset);
                 store.setPlaybackState('playing');
                 break;
@@ -393,6 +450,26 @@ export class PeerManager {
                 // Update peer last seen
                 store.updatePeerLatency(conn.peer, Date.now() - message.timestamp);
                 break;
+
+            case MessageType.PLAYBACK_STATE:
+                // Guest receives current playback state from host
+                const stateMsg = message as PlaybackState;
+                console.log(`[PeerManager] Received playback state: playing=${stateMsg.isPlaying}, pos=${stateMsg.seekPosition}`);
+
+                // Check if audio is ready
+                if (!audioEngine.getIsReady()) {
+                    console.log('[PeerManager] Audio not ready yet, queueing playback state...');
+                    this.pendingPlaybackState = stateMsg;
+                    break;
+                }
+
+                if (stateMsg.isPlaying) {
+                    audioEngine.schedulePlay(stateMsg.startTime, stateMsg.seekPosition, store.clockOffset);
+                    store.setPlaybackState('playing');
+                } else {
+                    store.setPlaybackState('stopped');
+                }
+                break;
         }
     }
 
@@ -407,19 +484,39 @@ export class PeerManager {
 
         const receivedChunks = this.audioChunks.get(peerId)!;
 
+        // Save meta before clearing (in case of errors or finally block)
+        const savedMeta = { ...this.audioMeta };
+
         try {
             const buffer = reassembleChunks(receivedChunks);
             console.log(`[PeerManager] Reassembled ${buffer.byteLength} bytes`);
 
-            await audioEngine.loadFromArrayBuffer(buffer, this.audioMeta.name);
+            await audioEngine.loadFromArrayBuffer(buffer, savedMeta.name);
             store.setAudioFile({
-                name: this.audioMeta.name,
-                size: this.audioMeta.size,
-                duration: this.audioMeta.duration,
+                name: savedMeta.name,
+                size: savedMeta.size,
+                duration: savedMeta.duration,
                 buffer,
             });
             store.setPlaybackState('stopped');
             console.log('[PeerManager] Audio loaded successfully');
+
+            // Process any pending playback state that arrived before audio was ready
+            if (this.pendingPlaybackState) {
+                console.log('[PeerManager] Processing queued playback state...');
+                const pendingState = this.pendingPlaybackState;
+                this.pendingPlaybackState = null;
+
+                if (pendingState.isPlaying) {
+                    // Recalculate timing - use fresh timestamp since we're starting now
+                    audioEngine.schedulePlay(
+                        performance.now() + SCHEDULE_BUFFER,
+                        pendingState.seekPosition,
+                        store.clockOffset
+                    );
+                    store.setPlaybackState('playing');
+                }
+            }
         } catch (error) {
             console.error('[PeerManager] Failed to load audio:', error);
             store.setPlaybackState('stopped');
@@ -480,6 +577,28 @@ export class PeerManager {
             this.streamAudioToPeer(conn, buffer, name, duration)
         );
         await Promise.all(promises);
+    }
+
+    /**
+     * Send current playback state to a specific connection (for sync-on-join)
+     */
+    private sendPlaybackStateToConnection(conn: DataConnection): void {
+        const store = useMeshBeatStore.getState();
+        const isPlaying = store.playbackState === 'playing';
+
+        // Calculate current seek position
+        // If playing, we need to send where the audio currently is
+        const seekPosition = isPlaying ? audioEngine.getCurrentTime?.() || 0 : 0;
+
+        const message: PlaybackState = {
+            type: MessageType.PLAYBACK_STATE,
+            isPlaying,
+            seekPosition,
+            startTime: performance.now() + SCHEDULE_BUFFER, // Future time to sync
+        };
+
+        conn.send(message);
+        console.log(`[PeerManager] Sent playback state: playing=${isPlaying}, pos=${seekPosition}`);
     }
 
     /**

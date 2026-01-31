@@ -16,24 +16,26 @@ const proxy = httpProxy.createProxyServer({});
 
 // Error handling
 proxy.on('error', (err, req, res) => {
-    console.error('[Proxy] Error:', err.message);
-    res.writeHead(502, { 'Content-Type': 'text/plain' });
-    res.end('Bad Gateway');
+    console.error('[Proxy] Error connecting to target:', err);
+    if (!res.headersSent) {
+        res.writeHead(502, { 'Content-Type': 'text/plain' });
+    }
+    res.end('Bad Gateway: ' + (err.code || 'Unknown Error'));
 });
 
 // Create the main server
 const server = http.createServer((req, res) => {
     // Route /meshbeat to PeerJS server
     if (req.url.startsWith('/meshbeat')) {
-        console.log(`[Proxy] → PeerJS: ${req.method} ${req.url}`);
+        console.log(`[Router] → PeerJS: ${req.method} ${req.url}`);
         proxy.web(req, res, {
-            target: `http://localhost:${PEERJS_PORT}`,
+            target: `http://0.0.0.0:${PEERJS_PORT}`,
             ws: false,
         });
     } else {
         // Route everything else to Next.js
         proxy.web(req, res, {
-            target: `http://localhost:${NEXTJS_PORT}`,
+            target: `http://0.0.0.0:${NEXTJS_PORT}`,
             ws: false,
         });
     }
@@ -42,20 +44,20 @@ const server = http.createServer((req, res) => {
 // Handle WebSocket upgrades
 server.on('upgrade', (req, socket, head) => {
     if (req.url.startsWith('/meshbeat')) {
-        console.log(`[Proxy] WebSocket → PeerJS: ${req.url}`);
+        console.log(`[Router] WebSocket → PeerJS: ${req.url}`);
         proxy.ws(req, socket, head, {
-            target: `ws://localhost:${PEERJS_PORT}`,
+            target: `ws://0.0.0.0:${PEERJS_PORT}`,
         });
     } else {
-        console.log(`[Proxy] WebSocket → Next.js: ${req.url}`);
+        console.log(`[Router] WebSocket → Next.js: ${req.url}`);
         proxy.ws(req, socket, head, {
-            target: `ws://localhost:${NEXTJS_PORT}`,
+            target: `ws://0.0.0.0:${NEXTJS_PORT}`,
         });
     }
 });
 
-server.listen(PORT, () => {
-    console.log(`[Proxy] MeshBeat running on port ${PORT}`);
-    console.log(`[Proxy] → Next.js on port ${NEXTJS_PORT}`);
-    console.log(`[Proxy] → PeerJS on port ${PEERJS_PORT}`);
+server.listen(PORT, '0.0.0.0', () => {
+    console.log(`[Router] MeshBeat listening ON ${PORT}`);
+    console.log(`[Router] → Routing to Next.js (3001) and PeerJS (9000)`);
+    console.log(`🚀 TIP: Access app at http://localhost:${PORT}`);
 });

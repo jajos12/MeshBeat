@@ -25,6 +25,7 @@ export enum MessageType {
     // Status
     PEER_INFO = 'PEER_INFO',
     HEARTBEAT = 'HEARTBEAT',
+    PLAYBACK_STATE = 'PLAYBACK_STATE', // Sync current playback state to new guests
 }
 
 export interface SyncRequest {
@@ -52,7 +53,7 @@ export interface AudioChunk {
     type: MessageType.AUDIO_CHUNK;
     chunkIndex: number;
     totalChunks: number;
-    data: string; // Base64 encoded audio data for JSON serialization
+    data: Uint8Array; // Binary audio data - Uint8Array for proper msgpack serialization
 }
 
 export interface AudioComplete {
@@ -105,6 +106,13 @@ export interface Heartbeat {
     timestamp: number;
 }
 
+export interface PlaybackState {
+    type: MessageType.PLAYBACK_STATE;
+    isPlaying: boolean;
+    seekPosition: number; // Current position in seconds
+    startTime: number; // When playback started (performance.now() on host)
+}
+
 export type ProtocolMessage =
     | SyncRequest
     | SyncResponse
@@ -119,10 +127,11 @@ export type ProtocolMessage =
     | GrantMaster
     | RevokeMaster
     | PeerInfo
-    | Heartbeat;
+    | Heartbeat
+    | PlaybackState;
 
-// Chunk size for audio streaming (64KB)
-export const CHUNK_SIZE = 64 * 1024;
+// Chunk size for audio streaming (16KB) - safer for cross-browser WebRTC
+export const CHUNK_SIZE = 16 * 1024;
 
 // Sync interval (ms) - reduced for more responsive measurements
 export const SYNC_INTERVAL = 1000;

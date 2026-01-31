@@ -148,6 +148,20 @@ export class AudioEngine {
     }
 
     /**
+     * Get current playback position (approximate)
+     * This is used for sync-on-join to report where playback currently is
+     */
+    getCurrentTime(): number {
+        if (!this.player || this.player.state !== 'started') {
+            return 0;
+        }
+        // Tone.js doesn't expose current time directly, but we can track it
+        // For now, return 0 - the schedulePlay will handle the offset
+        // TODO: Implement proper position tracking with Transport
+        return 0;
+    }
+
+    /**
      * Check if audio is loaded and ready
      */
     getIsReady(): boolean {
@@ -182,78 +196,66 @@ export class AudioEngine {
 }
 
 /**
- * Split ArrayBuffer into Base64 encoded chunks for streaming over JSON
+ * Split ArrayBuffer into Uint8Array chunks for binary streaming
+ * Note: We use Uint8Array because PeerJS msgpack handles it better than raw ArrayBuffer
  */
-export function chunkArrayBuffer(buffer: ArrayBuffer): string[] {
-    const chunks: string[] = [];
+export function chunkArrayBuffer(buffer: ArrayBuffer): Uint8Array[] {
+    const chunks: Uint8Array[] = [];
+    const sourceArray = new Uint8Array(buffer);
     let offset = 0;
 
     while (offset < buffer.byteLength) {
         const chunkSize = Math.min(CHUNK_SIZE, buffer.byteLength - offset);
-        const chunkBuffer = buffer.slice(offset, offset + chunkSize);
-        // Convert to Base64 for JSON serialization
-        const base64 = arrayBufferToBase64(chunkBuffer);
-        chunks.push(base64);
+        // Create a new Uint8Array copy of this chunk
+        chunks.push(new Uint8Array(sourceArray.slice(offset, offset + chunkSize)));
         offset += chunkSize;
     }
 
+    console.log(`[AudioEngine] Chunked ${buffer.byteLength} bytes into ${chunks.length} chunks`);
     return chunks;
 }
 
 /**
- * Reassemble Base64 encoded chunks into ArrayBuffer
+ * Reassemble chunks (Uint8Array or ArrayBuffer) into a single ArrayBuffer
  */
-export function reassembleChunks(chunks: string[]): ArrayBuffer {
-    // Filter out any undefined entries and validate chunks
-    const validChunks = chunks.filter((chunk): chunk is string =>
-        typeof chunk === 'string' && chunk.length > 0
-    );
+export function reassembleChunks(chunks: (Uint8Array | ArrayBuffer)[]): ArrayBuffer {
+    // Filter and convert chunks to Uint8Array
+    const validChunks: Uint8Array[] = [];
+
+    for (let i = 0; i < chunks.length; i++) {
+        const chunk = chunks[i];
+        if (chunk === undefined || chunk === null) {
+            console.warn(`[AudioEngine] Missing chunk at index ${i}`);
+            continue;
+        }
+
+        // Handle both Uint8Array and ArrayBuffer
+        if (chunk instanceof Uint8Array && chunk.byteLength > 0) {
+            validChunks.push(chunk);
+        } else if (chunk instanceof ArrayBuffer && chunk.byteLength > 0) {
+            validChunks.push(new Uint8Array(chunk));
+        } else {
+            console.warn(`[AudioEngine] Invalid chunk at index ${i}:`, typeof chunk);
+        }
+    }
 
     if (validChunks.length === 0) {
         throw new Error('No valid audio chunks received');
     }
 
-    // Convert Base64 chunks back to ArrayBuffers
-    const buffers = validChunks.map(base64ToArrayBuffer);
-    const totalSize = buffers.reduce((sum, buf) => sum + buf.byteLength, 0);
+    // Join chunks into a single Uint8Array
+    const totalSize = validChunks.reduce((sum, buf) => sum + buf.byteLength, 0);
+    console.log(`[AudioEngine] Reassembling ${validChunks.length} chunks, total size: ${totalSize} bytes`);
+
     const result = new Uint8Array(totalSize);
     let offset = 0;
 
-    for (const chunk of buffers) {
-        result.set(new Uint8Array(chunk), offset);
+    for (const chunk of validChunks) {
+        result.set(chunk, offset);
         offset += chunk.byteLength;
     }
 
     return result.buffer;
-}
-
-/**
- * Convert ArrayBuffer to Base64 string
- */
-export function arrayBufferToBase64(buffer: ArrayBuffer): string {
-    const bytes = new Uint8Array(buffer);
-    let binary = '';
-    for (let i = 0; i < bytes.byteLength; i++) {
-        binary += String.fromCharCode(bytes[i]);
-    }
-    return btoa(binary);
-}
-
-/**
- * Convert Base64 string to ArrayBuffer
- */
-export function base64ToArrayBuffer(base64: string): ArrayBuffer {
-    try {
-        const binary = atob(base64);
-        const bytes = new Uint8Array(binary.length);
-        for (let i = 0; i < binary.length; i++) {
-            bytes[i] = binary.charCodeAt(i);
-        }
-        return bytes.buffer;
-    } catch (error) {
-        console.error('[AudioEngine] Invalid Base64 chunk:', base64?.substring(0, 50));
-        throw new Error('Invalid Base64 audio data');
-    }
 }
 
 export const audioEngine = new AudioEngine();

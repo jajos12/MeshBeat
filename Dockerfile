@@ -47,6 +47,9 @@ COPY --from=builder /app/router.js ./
 COPY --from=builder /app/start.sh ./
 COPY --from=builder /app/debug-start.sh ./
 
+# Install http-proxy for the router
+RUN npm install http-proxy
+
 # Make start scripts executable
 RUN chmod +x start.sh debug-start.sh
 
