@@ -13,7 +13,7 @@ COPY server/package.json ./server/
 
 # Install dependencies for both app and server
 RUN npm ci
-RUN cd server && npm ci
+RUN cd server && npm install
 
 # Rebuild the source code only when needed
 FROM base AS builder
