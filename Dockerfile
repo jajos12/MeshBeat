@@ -43,7 +43,7 @@ COPY --from=builder /app/.next/standalone ./
 COPY --from=builder /app/.next/static ./.next/static
 COPY --from=builder /app/server ./server
 COPY --from=deps /app/server/node_modules ./server/node_modules
-COPY --from=builder /app/proxy.js ./
+COPY --from=builder /app/router.js ./
 COPY --from=builder /app/start.sh ./
 
 # Make start script executable

@@ -19,8 +19,8 @@ cd ..
 sleep 2
 
 # Start the proxy on the main port (foreground)
-echo "[start.sh] Starting proxy on port ${PORT:-3000}..."
-node proxy.js
+echo "[start.sh] Starting router on port ${PORT:-3000}..."
+node router.js
 
 # If proxy exits, kill background processes
 kill $NEXTJS_PID $PEERJS_PID 2>/dev/null
