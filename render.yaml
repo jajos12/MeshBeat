@@ -1,0 +1,17 @@
+# MeshBeat Render Blueprint
+# Deploy with: Connect repo to Render and it auto-detects this file
+
+services:
+  # PeerJS Signaling Server
+  - type: web
+    name: meshbeat-signaling
+    runtime: node
+    region: oregon  # Change to your preferred region
+    plan: free
+    rootDir: server
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+    healthCheckPath: /meshbeat
