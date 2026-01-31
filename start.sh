@@ -1,8 +1,11 @@
 #!/bin/sh
 # MeshBeat Startup Script
-# Starts Next.js, PeerJS server, and the proxy in parallel
+# Starts Next.js, PeerJS server, and the router in parallel
 
 echo "[start.sh] Starting MeshBeat services..."
+
+# Change to app directory
+cd /app
 
 # Start Next.js on port 3001 in the background
 echo "[start.sh] Starting Next.js on port 3001..."
@@ -11,16 +14,15 @@ NEXTJS_PID=$!
 
 # Start PeerJS server on port 9000 in the background
 echo "[start.sh] Starting PeerJS server on port 9000..."
-cd server && node index.js &
+cd /app/server && node index.js &
 PEERJS_PID=$!
-cd ..
 
 # Give services time to initialize
 sleep 2
 
-# Start the proxy on the main port (foreground)
+# Start the router on the main port (foreground)
 echo "[start.sh] Starting router on port ${PORT:-3000}..."
-node router.js
+cd /app && node router.js
 
-# If proxy exits, kill background processes
+# If router exits, kill background processes
 kill $NEXTJS_PID $PEERJS_PID 2>/dev/null

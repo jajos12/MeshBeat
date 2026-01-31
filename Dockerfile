@@ -45,9 +45,10 @@ COPY --from=builder /app/server ./server
 COPY --from=deps /app/server/node_modules ./server/node_modules
 COPY --from=builder /app/router.js ./
 COPY --from=builder /app/start.sh ./
+COPY --from=builder /app/debug-start.sh ./
 
-# Make start script executable
-RUN chmod +x start.sh
+# Make start scripts executable
+RUN chmod +x start.sh debug-start.sh
 
 # Change ownership
 RUN chown -R nextjs:nodejs /app
